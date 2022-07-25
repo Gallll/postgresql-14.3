@@ -10,7 +10,7 @@
 #
 # Use -n to prevent 'make clean'
 
-MAKE="make"
+MAKE="make -j4"
 
 [ ! -d src ] && echo "This must be run from the top of the PostgreSQL source tree" 1>&2 && exit 1
 
