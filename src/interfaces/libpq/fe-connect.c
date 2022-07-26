@@ -3,7 +3,7 @@
  * fe-connect.c
  *	  functions related to setting up a connection to the backend
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -14,7 +14,10 @@
  */
 
 #include "postgres_fe.h"
-
+// #include <openssl/ssl.h>
+// #include <openssl/err.h>
+// #include <openssl/evp.h>
+// #include <openssl/x509.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <ctype.h>
@@ -42,9 +45,9 @@
 #undef near
 #endif
 #define near
-#include <shlobj.h>
+#include "shlobj.h"
 #ifdef _MSC_VER					/* mstcpip.h is missing on mingw */
-#include <mstcpip.h>
+#include "mstcpip.h"
 #endif
 #else
 #include <sys/socket.h>
@@ -65,11 +68,11 @@
 
 #ifdef USE_LDAP
 #ifdef WIN32
-#include <winldap.h>
+#include "winldap.h"
 #else
 /* OpenLDAP deprecates RFC 1823, but we want standard conformance */
 #define LDAP_DEPRECATED 1
-#include <ldap.h>
+#include "ldap.h"
 typedef struct timeval LDAP_TIMEVAL;
 #endif
 static int	ldapServiceLookup(const char *purl, PQconninfoOption *options,
@@ -1248,13 +1251,61 @@ connectOptions2(PGconn *conn)
 
 				if (pwhost == NULL || pwhost[0] == '\0')
 					pwhost = conn->connhost[i].hostaddr;
-
 				conn->connhost[i].password =
 					passwordFromFile(pwhost,
 									 conn->connhost[i].port,
 									 conn->dbName,
 									 conn->pguser,
 									 conn->pgpassfile);
+				if (conn->connhost[i].password!=NULL)
+				{
+				EVP_CIPHER_CTX *ctx;
+				unsigned char key[16] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+				unsigned char iv[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+				unsigned char decdata[1024] = {0};
+				int tmplen=16;
+				int declen = 0;
+				char *encode;
+				encode = conn->connhost[i].password;
+				char decode[1024] = {0};
+				int base64_decode(char *in_str, int in_len, char *out_str);
+				int size = base64_decode(encode, strlen(encode), decode);
+
+				int ret;
+				OpenSSL_add_all_algorithms();
+				ctx = EVP_CIPHER_CTX_new();
+				ret = EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv);
+				if (ret != 1)
+				{
+					printf("EVP_EncryptFinal_ex failed.\n");
+					EVP_CIPHER_CTX_free(ctx);
+				}
+
+				ret = EVP_DecryptUpdate(ctx, decdata, &declen, decode, size);
+				if (ret != 1)
+				{
+					printf("EVP_EncryptFinal_ex failed.\n");
+					EVP_CIPHER_CTX_free(ctx);
+				}
+
+				ret = EVP_DecryptFinal_ex(ctx, decdata + declen, &tmplen);
+				if (ret != 1)
+				{
+					printf("EVP_EncryptFinal_ex failed.\n");
+					EVP_CIPHER_CTX_free(ctx);
+				}
+
+				declen += tmplen;
+				
+
+				/* check the result */
+				// printf("decrypt message: %s.\n", decdata);
+				decdata[declen] = '\0';
+				char *password = (char *)malloc(declen+1);
+				strcpy(password, decdata);
+				conn->connhost[i].password = password;
+				printf("%s\n", conn->connhost[i].password);
+				}
 			}
 		}
 	}
@@ -7364,4 +7415,25 @@ PQregisterThreadLock(pgthreadlock_t newhandler)
 		pg_g_threadlock = default_threadlock;
 
 	return prev;
+}
+// base64 解码
+int base64_decode(char *in_str, int in_len, char *out_str)
+{
+	BIO *b64, *bio;
+	int size = 0;
+
+	if (in_str == NULL || out_str == NULL)
+		return -1;
+
+	b64 = BIO_new(BIO_f_base64());
+	BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+
+	bio = BIO_new_mem_buf(in_str, in_len);
+	bio = BIO_push(b64, bio);
+
+	size = BIO_read(bio, out_str, in_len);
+	out_str[size] = '\0';
+
+	BIO_free_all(bio);
+	return size;
 }
